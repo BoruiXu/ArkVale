@@ -232,7 +232,7 @@ def _3_stages_greedy_search(
         return input_ids
 
 
-_OLD_GREEDY_SEARCH = GenerationMixin._greedy_search
+_OLD_GREEDY_SEARCH = GenerationMixin._sample #GenerationMixin._greedy_search
 
 
 def enable_3_stages_gen():

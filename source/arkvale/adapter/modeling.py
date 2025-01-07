@@ -21,6 +21,53 @@ from arkvale.infer_state import InferState
 from arkvale import kernels
 
 
+#from transformers modeling_llama.py
+
+def rotate_half(x):
+    """Rotates half the hidden dims of the input."""
+    x1 = x[..., : x.shape[-1] // 2]
+    x2 = x[..., x.shape[-1] // 2 :]
+    return torch.cat((-x2, x1), dim=-1)
+
+def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
+    """Applies Rotary Position Embedding to the query and key tensors.
+
+    Args:
+        q (`torch.Tensor`): The query tensor.
+        k (`torch.Tensor`): The key tensor.
+        cos (`torch.Tensor`): The cosine part of the rotary embedding.
+        sin (`torch.Tensor`): The sine part of the rotary embedding.
+        position_ids (`torch.Tensor`, *optional*):
+            Deprecated and unused.
+        unsqueeze_dim (`int`, *optional*, defaults to 1):
+            The 'unsqueeze_dim' argument specifies the dimension along which to unsqueeze cos[position_ids] and
+            sin[position_ids] so that they can be properly broadcasted to the dimensions of q and k. For example, note
+            that cos[position_ids] and sin[position_ids] have the shape [batch_size, seq_len, head_dim]. Then, if q and
+            k have the shape [batch_size, heads, seq_len, head_dim], then setting unsqueeze_dim=1 makes
+            cos[position_ids] and sin[position_ids] broadcastable to the shapes of q and k. Similarly, if q and k have
+            the shape [batch_size, seq_len, heads, head_dim], then set unsqueeze_dim=2.
+    Returns:
+        `tuple(torch.Tensor)` comprising of the query and key tensors rotated using the Rotary Position Embedding.
+    """
+    cos = cos.unsqueeze(unsqueeze_dim)
+    sin = sin.unsqueeze(unsqueeze_dim)
+    q_embed = (q * cos) + (rotate_half(q) * sin)
+    k_embed = (k * cos) + (rotate_half(k) * sin)
+    return q_embed, k_embed
+
+def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
+    """
+    This is the equivalent of torch.repeat_interleave(x, dim=1, repeats=n_rep). The hidden states go from (batch,
+    num_key_value_heads, seqlen, head_dim) to (batch, num_attention_heads, seqlen, head_dim)
+    """
+    batch, num_key_value_heads, slen, head_dim = hidden_states.shape
+    if n_rep == 1:
+        return hidden_states
+    hidden_states = hidden_states[:, :, None, :, :].expand(batch, num_key_value_heads, n_rep, slen, head_dim)
+    return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen, head_dim)
+
+
+
 def _arkvale_rms_norm_forward(self: LlamaRMSNorm, hidden_states):
     return kernels.rms_norm(hidden_states, self.weight, self.variance_epsilon)
 
@@ -78,16 +125,16 @@ def _arkvale_attn_forward(
 
     query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim)
     key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim)
-    value_states = value_states.view(
-        bsz, q_len, self.num_key_value_heads, self.head_dim
-    )
+    value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim)
+    
 
-    kvc = state.kv_caches[cur_id]
-    budget = state.layer2budget[cur_id]
+    kvc = state.kv_caches[cur_id]  #current layer kv cache pool
+    budget = state.layer2budget[cur_id] #current layer budget
 
     n_pf_layers = state.n_prefetch_layers
     may_do_pf = q_len == 1 and n_pf_layers is not None
     do_send_pf = do_recv_pf = False
+    
     if may_do_pf:
         pf_dst_id = cur_id + n_pf_layers
         if pf_dst_id < n_layers:
@@ -121,17 +168,41 @@ def _arkvale_attn_forward(
                 # state.estimate_select_recall(pf_dst_id, query_states1)
                 state.recall(pf_dst_id, eids, rids)
     else:
-        kernels.qk_apply_rotary_in_place(
-            query_states,
-            key_states,
-            kvc.seq_len,
-            rope_scale=self.rotary_emb.scaling_factor,
-            rope_theta=self.rotary_emb.base,
-        )
-
+        
+        # kernels.qk_apply_rotary_in_place(
+        #     query_states,
+        #     key_states,
+        #     kvc.seq_len,
+        #     rope_scale=self.rotary_emb.scaling_factor,
+        #     rope_theta=self.rotary_emb.base,
+        # )
+        #changed to shared rotary
+        cos, sin = kwargs.get("position_embeddings")
+        if(q_len ==1):
+            cos = cos[:,-1:]
+            sin = sin[:,-1:]
+        query_states, key_states = apply_rotary_pos_emb(query_states.transpose(1, 2), key_states.transpose(1, 2), cos, sin)
+        
+        #llama3.2-3B is group attention query 24 heads and key 8 heads
+        #replicate key states to match query states
+        if(self.num_key_value_heads != self.num_heads and infer_state.group_size == self.num_heads):
+            key_states = repeat_kv(key_states, self.num_key_value_groups)
+            value_states = repeat_kv(value_states.transpose(1, 2), self.num_key_value_groups)
+            
+            value_states = value_states.transpose(1, 2)
+            value_states = value_states.contiguous()
+        
+        
+        #recover to arkvale layout
+        query_states = query_states.transpose(1, 2)
+        key_states = key_states.transpose(1, 2)
+        
+        key_states = key_states.contiguous()
+        
     if q_len > 1:
         state.attn_layers[cur_id] = self
         kvc.prefill_alloc_n_tokens(q_len, state.alloc_page)
+             
 
     state.append_paged_kv_cache(cur_id, key_states, value_states)
 
@@ -200,17 +271,34 @@ def enable_arkvale(
     **kwargs,
 ):
     if infer_state is None:
+        #for llama3.2-3B, for ease use, n_kv_heads = num_attention_heads instead of num_key_value_heads
+        #because the provided code not support attention_head/token_head = 3, only support 1,4,8
         config = self.model.config
-        infer_state = InferState(
-            n_layers=config.num_hidden_layers,
-            n_qo_heads=config.num_attention_heads,
-            n_kv_heads=config.num_key_value_heads,
-            head_dim=config.hidden_size // config.num_attention_heads,
-            page_size=page_size,
-            dtype=dtype,
-            device=device,
-            **kwargs,
-        )
+        tmp_result = config.num_attention_heads/config.num_key_value_heads
+        if( tmp_result==1 or tmp_result==4 or tmp_result==8):
+            infer_state = InferState(
+                n_layers=config.num_hidden_layers,
+                n_qo_heads=config.num_attention_heads,
+                n_kv_heads=config.num_key_value_heads,  
+                head_dim=config.hidden_size // config.num_attention_heads,
+                page_size=page_size,
+                dtype=dtype,
+                device=device,
+                **kwargs,
+            )
+        else:
+            infer_state = InferState(
+                n_layers=config.num_hidden_layers,
+                n_qo_heads=config.num_attention_heads,
+                n_kv_heads=config.num_attention_heads,  
+                head_dim=config.hidden_size // config.num_attention_heads,
+                page_size=page_size,
+                dtype=dtype,
+                device=device,
+                **kwargs,
+            )
+            
+        
 
     if hasattr(self, "lm_head"):
         _lm_head_forward = self.lm_head.forward
