@@ -2,6 +2,12 @@
 
 [\[Link\]](https://neurips.cc/virtual/2024/poster/96635) [\[Paper\]](./media/arkvale-nips24-paper.pdf) [\[Poster\]](./media/arkvale-nips24-poster.pdf) [\[Slides\]](./media/arkvale-nips24-talk.pdf)
 
+
+## BoruiXu changes
+
+- Modify some codes to support Transformers library 4.47
+- Due to the original C++ kernels does not support $\frac{Attention_{head}}{KeyVale_{head}} \neq [1,4,8]$, I replicate cache to assume the key_value_head equals attention_head.
+
 ## Download
 
 ```bash
