@@ -91,7 +91,7 @@ def _arkvale_attn_forward(
     if cur_id == 0:
         state.begin_forward(bsz, q_len)
 
-    if self.config.pretraining_tp > 1:
+    if hasattr(self.config, "pretraining_tp") and self.config.pretraining_tp > 1:
         key_value_slicing = (
             self.num_key_value_heads * self.head_dim
         ) // self.config.pretraining_tp
