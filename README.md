@@ -9,7 +9,7 @@
 - Due to the original C++ kernels does not support $\frac{Attention_{head}}{KeyVale_{head}} \neq [1,4,8]$, I replicate cache to assume the key_value_head equals attention_head.
 
 
-Comment: The original code seems that only the KV cache exceeds the predefined budget, it will use the topK page. Otherwise, it will use the full attention method. 
+Comment: The code uses full budget pages for attention computation, and ensures the top-k pages in the budget pool.
 ## Download
 
 ```bash
