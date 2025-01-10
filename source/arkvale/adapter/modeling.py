@@ -237,7 +237,7 @@ def _arkvale_attn_forward(
 
     attn_output = attn_output.reshape(bsz, q_len, self.hidden_size)
 
-    if self.config.pretraining_tp > 1:
+    if hasattr(self.config, "pretraining_tp") and self.config.pretraining_tp > 1:
         attn_output = attn_output.split(
             self.hidden_size // self.config.pretraining_tp, dim=2
         )

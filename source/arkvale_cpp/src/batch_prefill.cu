@@ -85,7 +85,7 @@ std::vector<torch::Tensor> BatchPrefillWithPagedKVCachePyTorchWrapper::Forward(
   CHECK_DIM(3, q);         // (nnz_qo, H_qo, D)
   CHECK_DIM(1, qo_indptr); // (B + 1,)
   // [max_num_pages, 2, num_kv_heads, page_size, head_dim] for HND
-  // [max_num_pages, 2, page_size, num_kv_heads, head_dim] for HND
+  // [max_num_pages, 2, page_size, num_kv_heads, head_dim] for NHD
   CHECK_DIM(5, paged_kv_data);
   CHECK_DIM(1, paged_kv_indptr);        // (B + 1,)
   CHECK_DIM(1, paged_kv_indices);       // (nnz_kv,)

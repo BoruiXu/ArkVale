@@ -95,6 +95,7 @@ class InferState:
 
         self._pool = KvPool(n_max_pages, page_size, n_kv_heads, head_dim, dtype, device)
         self.kv_caches: List[KvCache] = [None] * self.n_layers
+        #dg means digest
         self.dg_caches: List[KvCache] = [None] * self.n_layers
         self._cpu_pool = KvPool(
             n_max_cpu_pages, page_size, n_kv_heads, head_dim, dtype, torch.device("cpu")
@@ -103,6 +104,8 @@ class InferState:
         self.topk_dout: Tensor = None
         self.topk_iout: Tensor = None
         self.topk_newi: Tensor = None
+        
+        #rids means recall ids
         self.topk_rids: Tensor = None
         self.topk_buff: Tensor = None
 
@@ -397,6 +400,8 @@ class InferState:
         scores = scores.reshape(bsz, -1)
         cc2gp = kvc.cc2gp.reshape(bsz, -1)
         gc2cc = kvc.gc2cc.reshape(bsz, -1)
+        #dout is the score, and eids is the index of the score
+        #newi is the index of the new page that not in the gpu cache
         kernels.select_topk(
             scores, dout, eids, newi, cc2gp, gc2cc, rids, buff, topk, ns, nw
         )
@@ -425,6 +430,7 @@ class InferState:
 
     def estimate_select_recall(self, layer_idx: int, q: Tensor):
         scores = self.estimate_scores(layer_idx, q)
+        #eid means evict ids, rid means recall ids
         eids, rids = self.select_topk(layer_idx, scores)
         self.recall(layer_idx, eids, rids)
         return scores, eids, rids
