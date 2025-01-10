@@ -16,5 +16,5 @@ sentencepiece
 datasets
 accelerate
 protobuf
-transformers==4.40.0
+transformers
 omegaconf
