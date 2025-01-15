@@ -9,7 +9,10 @@
 - Due to the original C++ kernels does not support $\frac{Attention_{head}}{KeyVale_{head}} \neq [1,4,8]$, I replicate cache to assume the key_value_head equals attention_head.
 
 
-Comment: The code uses full budget pages for attention computation, and ensures the top-k pages in the budget pool.
+Comment: 
+- The code uses full budget pages for attention computation, and ensures the top-k pages in the budget pool.
+- The result quality will be impacted when running the code on a GPU that is running multi-tasks.
+
 ## Download
 
 ```bash
